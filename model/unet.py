@@ -534,6 +534,79 @@ class BeatGANsEncoderModel(nn.Module):
         h = self.out(x)
         return h
 
+@dataclass
+class ViewEncoderConfig(BaseConfig):
+    image_size: int
+    in_channels: int
+    model_channels: int
+    out_hid_channels: int
+    out_channels: int
+    num_res_blocks: int
+    attention_resolutions: Tuple[int]
+    dropout: float = 0
+    channel_mult: Tuple[int] = (1, 2, 4, 8)
+    use_time_condition: bool = False
+    conv_resample: bool = True
+    dims: int = 2
+    use_checkpoint: bool = False
+    num_heads: int = 1
+    num_head_channels: int = -1
+    resblock_updown: bool = False
+    use_new_attention_order: bool = False
+    pool: str = 'adaptivenonzero'
+
+    def make_model(self):
+        return ViewEncoderModel(self)
+
+
+class ViewEncoderModel(nn.Module):
+    """
+    The half UNet model with attention and timestep embedding.
+
+    For usage, see UNet.
+    """
+    def __init__(self, conf: ViewEncoderConfig):
+        super().__init__()
+        self.conf = conf
+        self.dtype = th.float32
+
+        if conf.use_time_condition:
+            time_embed_dim = conf.model_channels * 4
+            self.time_embed = nn.Sequential(
+                linear(conf.model_channels, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
+        else:
+            time_embed_dim = None
+
+        self.input_blocks =  nn.ModuleList(TimestepEmbedSequential(*[ 
+                linear(12, conf.out_channels),
+                nn.SiLU(),
+                linear(conf.out_channels, conf.out_channels),
+                # nn.SiLU(),
+                # linear(conf.out_channels, conf.out_channels),
+                ])
+            )
+
+    def forward(self, x, t=None, return_2d_feature=False):
+        """
+        Apply the model to an input batch.
+
+        :param x: an [N x C x ...] Tensor of inputs.
+        :param timesteps: a 1-D batch of timesteps.
+        :return: an [N x K] Tensor of outputs.
+        """
+        results = []
+        # print('encoder input shape :',x.shape)
+        h = x.type(self.dtype)
+        for module in self.input_blocks:
+            h = module(h)
+
+        h = h.type(x.dtype)
+        # print('encoder output shape :',h.shape)
+
+        return h
 
 class SuperResModel(BeatGANsUNetModel):
     """

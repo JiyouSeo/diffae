@@ -79,6 +79,8 @@ def adamw_weight_decay(conf: TrainConfig):
     conf.weight_decay = 0.01
     return conf
 
+# def viewsyn_autoenc_latent():
+#     conf = 
 
 def ffhq128_autoenc_latent():
     conf = pretrain_ffhq128_autoenc130M()

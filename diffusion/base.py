@@ -10,6 +10,7 @@ from config_base import BaseConfig
 import enum
 import math
 
+import os
 import numpy as np
 import torch as th
 from model import *
@@ -18,6 +19,8 @@ from typing import NamedTuple, Tuple
 from choices import *
 from torch.cuda.amp import autocast
 import torch.nn.functional as F
+from torchvision.utils import save_image
+from torchvision import transforms
 
 from dataclasses import dataclass
 
@@ -70,32 +73,35 @@ class GaussianDiffusionBeatGans:
         self.num_timesteps = int(betas.shape[0])
 
         alphas = 1.0 - betas
-        self.alphas_cumprod = np.cumprod(alphas, axis=0)
-        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1])
-        self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0)
+        self.alphas_cumprod = np.cumprod(alphas, axis=0) # bar_alpha
+        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1]) # 1,bar_alpha_0~t-1까지
+        self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0) #  bar_aplha_1~t,0까지
         assert self.alphas_cumprod_prev.shape == (self.num_timesteps, )
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
-        self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - self.alphas_cumprod)
-        self.log_one_minus_alphas_cumprod = np.log(1.0 - self.alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod -
-                                                   1)
+        self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod) # root(bar_alpha)
+        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - self.alphas_cumprod) # root(1- bar_alpha)
+        self.log_one_minus_alphas_cumprod = np.log(1.0 - self.alphas_cumprod) # log(1- bar_alpha)
+        self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod) #  1 / root(bar_alpha)
+        self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod - 1) # root((1 / bar_alpha)- 1)
+                                                    
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
         self.posterior_variance = (betas * (1.0 - self.alphas_cumprod_prev) /
-                                   (1.0 - self.alphas_cumprod))
+                                   (1.0 - self.alphas_cumprod)) # tilda_beta
         # log calculation clipped because the posterior variance is 0 at the
         # beginning of the diffusion chain.
-        self.posterior_log_variance_clipped = np.log(
-            np.append(self.posterior_variance[1], self.posterior_variance[1:]))
+        self.posterior_log_variance_clipped = np.log( # 
+            np.append(self.posterior_variance[1], self.posterior_variance[1:])) # log(tilda_beta)
+
+
+        # For calculate tilda mu
         self.posterior_mean_coef1 = (betas *
                                      np.sqrt(self.alphas_cumprod_prev) /
-                                     (1.0 - self.alphas_cumprod))
+                                     (1.0 - self.alphas_cumprod)) # root(bar_alpha_t-1) * beta_t / 1 - bar_alpha_t
         self.posterior_mean_coef2 = ((1.0 - self.alphas_cumprod_prev) *
                                      np.sqrt(alphas) /
-                                     (1.0 - self.alphas_cumprod))
+                                     (1.0 - self.alphas_cumprod)) # root(alpha) * (1 - bar_alpha_t-1) / 1 - bar_alpha_t
 
     def training_losses(self,
                         model: Model,
@@ -120,7 +126,7 @@ class GaussianDiffusionBeatGans:
         if noise is None:
             noise = th.randn_like(x_start)
 
-        x_t = self.q_sample(x_start, t, noise=noise)
+        x_t = self.q_sample(x_start, t, noise=noise) # Forward noising process
 
         terms = {'x_t': x_t}
 
@@ -128,14 +134,24 @@ class GaussianDiffusionBeatGans:
                 LossType.mse,
                 LossType.l1,
         ]:
-            with autocast(self.conf.fp16):
+            with autocast(self.conf.fp16): # amp
                 # x_t is static wrt. to the diffusion process
-                model_forward = model.forward(x=x_t.detach(),
-                                              t=self._scale_timesteps(t),
-                                              x_start=x_start.detach(),
-                                              **model_kwargs)
+                if 'camera' in model_kwargs:
+                    # print(model_kwargs['camera'][0].shape)
+                    model_forward = model.forward(x=x_t.detach(),
+                                                t=self._scale_timesteps(t),
+                                                x_start=model_kwargs['camera'].detach(),
+                                                **model_kwargs)
+                else:
+                    model_forward = model.forward(x=x_t.detach(),
+                                                t=self._scale_timesteps(t),
+                                                x_start=x_start.detach(),
+                                                **model_kwargs)
             model_output = model_forward.pred
 
+
+
+            
             _model_output = model_output
             if self.conf.train_pred_xstart_detach:
                 _model_output = _model_output.detach()
@@ -146,7 +162,32 @@ class GaussianDiffusionBeatGans:
                 x=x_t,
                 t=t,
                 clip_denoised=False)
-            terms['pred_xstart'] = p_mean_var['pred_xstart']
+            terms['pred_xstart'] = p_mean_var['pred_xstart'] # 여기가 x_0 pred임
+
+            x_input, pred_x = x_start.clone().detach().cpu(), p_mean_var['pred_xstart'].clone().detach()
+
+            inv_norm = transforms.Normalize(
+                mean=[-0.5/0.5, -0.5/0.5, -0.5/0.5],
+                std=[2, 2, 2]
+            )
+            x_input, pred_x = inv_norm(x_input), inv_norm(pred_x)
+            checkpoint_name = model_kwargs['name']
+            tmp_path = f'/home/jiyouseo/diffae/checkpoints/{checkpoint_name}/npy_folder/'
+            if os.path.exists(tmp_path) == False:
+                os.mkdir(tmp_path)
+            if os.path.exists(os.path.join(tmp_path + 'x_s/')) == False:
+                os.mkdir(os.path.join(tmp_path + 'x_s/'))
+                os.mkdir(os.path.join(tmp_path + 'm_o/'))
+
+            j = 0
+            while os.path.exists(tmp_path + f'x_s/x_s_{j}'):
+                j += 1
+            
+            os.mkdir(os.path.join(tmp_path + f'/x_s/x_s_{j}'))
+            os.mkdir(os.path.join(tmp_path + f'/m_o/m_o_{j}'))
+            for i in range(x_input.size(0)):
+                save_image(x_input[i],tmp_path + f'/x_s/x_s_{j}/x_s_{i}.png')
+                save_image(pred_x[i],tmp_path + f'/m_o/m_o_{j}/m_o_{i}.png')
 
             # model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
@@ -214,7 +255,7 @@ class GaussianDiffusionBeatGans:
         else:
             raise NotImplementedError()
 
-    def q_mean_variance(self, x_start, t):
+    def q_mean_variance(self, x_start, t): # forward process의 mean, variance, log variance
         """
         Get the distribution q(x_t | x_0).
 
@@ -231,7 +272,7 @@ class GaussianDiffusionBeatGans:
                                             t, x_start.shape)
         return mean, variance, log_variance
 
-    def q_sample(self, x_start, t, noise=None):
+    def q_sample(self, x_start, t, noise=None): 
         """
         Diffuse the data for a given number of diffusion steps.
 
@@ -249,6 +290,7 @@ class GaussianDiffusionBeatGans:
             _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) *
             x_start + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod,
                                            t, x_start.shape) * noise)
+            # x_t = root(bar_alpha) * x_0 + root(1- bar_alpha) * noise
 
     def q_posterior_mean_variance(self, x_start, x_t, t):
         """
@@ -346,21 +388,21 @@ class GaussianDiffusionBeatGans:
             else:
                 raise NotImplementedError()
             model_mean, _, _ = self.q_posterior_mean_variance(
-                x_start=pred_xstart, x_t=x, t=t)
+                x_start=pred_xstart, x_t=x, t=t) # tilda mu
         else:
             raise NotImplementedError(self.model_mean_type)
 
         assert (model_mean.shape == model_log_variance.shape ==
                 pred_xstart.shape == x.shape)
         return {
-            "mean": model_mean,
-            "variance": model_variance,
-            "log_variance": model_log_variance,
-            "pred_xstart": pred_xstart,
+            "mean": model_mean, # tilda mu
+            "variance": model_variance, # variance
+            "log_variance": model_log_variance, # log_variance
+            "pred_xstart": pred_xstart, # pred_xstart
             'model_forward': model_forward,
         }
 
-    def _predict_xstart_from_eps(self, x_t, t, eps):
+    def _predict_xstart_from_eps(self, x_t, t, eps): # x_0 = 1 /root(bar_alpha) * x_t - root( (1/ bar_alpha) - 1) * eps
         assert x_t.shape == eps.shape
         return (_extract_into_tensor(self.sqrt_recip_alphas_cumprod, t,
                                      x_t.shape) * x_t -
@@ -495,7 +537,7 @@ class GaussianDiffusionBeatGans:
         model_kwargs=None,
         device=None,
         progress=False,
-    ):
+    ): # p sampling loop 
         """
         Generate samples from the model.
 
@@ -541,7 +583,7 @@ class GaussianDiffusionBeatGans:
         model_kwargs=None,
         device=None,
         progress=False,
-    ):
+    ): # p sample를 시간 t마다 진행해서 yield
         """
         Generate samples from the model and yield intermediate samples from
         each timestep of diffusion.
@@ -745,6 +787,7 @@ class GaussianDiffusionBeatGans:
                 eta=eta,
         ):
             final = sample
+        
         return final["sample"]
 
     def ddim_sample_loop_progressive(

@@ -92,7 +92,7 @@ class LitModel(pl.LightningModule):
             self.device)
         return cond
 
-    def sample(self, N, device, T=None, T_latent=None):
+    def sample(self, N, device, cond=None, T=None, T_latent=None):
         if T is None:
             sampler = self.eval_sampler
             latent_sampler = self.latent_sampler
@@ -105,15 +105,23 @@ class LitModel(pl.LightningModule):
                             self.conf.img_size,
                             self.conf.img_size,
                             device=device)
-        pred_img = render_uncondition(
-            self.conf,
-            self.ema_model,
-            noise,
-            sampler=sampler,
-            latent_sampler=latent_sampler,
-            conds_mean=self.conds_mean,
-            conds_std=self.conds_std,
-        )
+        
+        if cond is not None:
+            pred_img = render_condition(self.conf,
+                                        self.ema_model,
+                                        noise,
+                                        sampler=sampler,
+                                        cond=cond)
+        else:
+            pred_img = render_uncondition(
+                self.conf,
+                self.ema_model,
+                noise,
+                sampler=sampler,
+                latent_sampler=latent_sampler,
+                conds_mean=self.conds_mean,
+                conds_std=self.conds_std,
+            )
         pred_img = (pred_img + 1) / 2
         return pred_img
 
@@ -303,10 +311,14 @@ class LitModel(pl.LightningModule):
                 with torch.no_grad():
                     # (n, c)
                     # print('idx:', batch['index'])
-                    cond = model.encoder(batch['img'].to(self.device))
+                    if self.conf.data_name == 'viewsyn':
+                        cond = model.encoder(batch['camera'].to(self.device))
+                    else:
+                        cond = model.encoder(batch['img'].to(self.device))
 
                     # used for reordering to match the original dataset
                     idx = batch['index']
+                    print(idx)
                     idx = self.all_gather(idx)
                     if idx.dim() == 2:
                         idx = idx.flatten(0, 1)
@@ -325,7 +337,20 @@ class LitModel(pl.LightningModule):
                         render = self.all_gather(render)
                         if render.dim() == 5:
                             # (k*n, c)
-                            render = render.flatten(0, 1)
+                            render = render.flatten(0, 1) # 얘 시각화하면 될 듯
+                        
+                        # if self.global_rank == 0:
+                        #     for j in range(len(idx)):
+                        #         idx_path = render_save_path + f'{str(idx[j].item())}/'
+                        #         if os.path.exists(render_save_path) == False:
+                        #             os.mkdir(render_save_path)
+                        #         if os.path.exists(idx_path) == False:
+                        #             os.mkdir(idx_path)
+                                
+                        #         for i in range(render.size(0)):
+                        #             save_image(render[i], idx_path + f'/infer_{str(i)}.png')
+                        #             # save_image(batch['img'][i], idx_path + f'/target_{str(i)}.png')
+
 
                         # print('global_rank:', self.global_rank)
 
@@ -362,9 +387,13 @@ class LitModel(pl.LightningModule):
                     cond = (cond - self.conds_mean.to(
                         self.device)) / self.conds_std.to(self.device)
             else:
-                imgs, idxs = batch['img'], batch['index']
-                # print(f'(rank {self.global_rank}) batch size:', len(imgs))
-                x_start = imgs
+                if self.conf.data_name == 'viewsyn':
+                    imgs, idxs, camera = batch['img'], batch['index'], batch['camera']
+                    x_start = imgs
+                else:
+                    imgs, idxs = batch['img'], batch['index']
+                    # print(f'(rank {self.global_rank}) batch size:', len(imgs))
+                    x_start = imgs
 
             if self.conf.train_mode == TrainMode.diffusion:
                 """
@@ -372,9 +401,16 @@ class LitModel(pl.LightningModule):
                 """
                 # with numpy seed we have the problem that the sample t's are related!
                 t, weight = self.T_sampler.sample(len(x_start), x_start.device)
-                losses = self.sampler.training_losses(model=self.model,
-                                                      x_start=x_start,
-                                                      t=t)
+                if self.conf.data_name == 'viewsyn':
+                    losses = self.sampler.training_losses(model=self.model,
+                                                            x_start=x_start,
+                                                            model_kwargs={'camera':camera, 'name': self.conf.name},
+                                                            t=t)
+                else:
+                    losses = self.sampler.training_losses(model=self.model,
+                                                        x_start=x_start,
+                                                        model_kwargs={'name': self.conf.name},
+                                                        t=t)
             elif self.conf.train_mode.is_latent_diffusion():
                 """
                 training the latent variables!
@@ -407,28 +443,31 @@ class LitModel(pl.LightningModule):
 
         return {'loss': loss}
 
-    def on_train_batch_end(self, outputs, batch, batch_idx: int,
-                           dataloader_idx: int) -> None:
-        """
-        after each training step ...
-        """
-        if self.is_last_accum(batch_idx):
-            # only apply ema on the last gradient accumulation step,
-            # if it is the iteration that has optimizer.step()
-            if self.conf.train_mode == TrainMode.latent_diffusion:
-                # it trains only the latent hence change only the latent
-                ema(self.model.latent_net, self.ema_model.latent_net,
-                    self.conf.ema_decay)
-            else:
-                ema(self.model, self.ema_model, self.conf.ema_decay)
+    # def on_train_batch_end(self, outputs, batch, batch_idx: int,
+    #                        dataloader_idx: int) -> None:
+    #     """
+    #     after each training step ...
+    #     """
+    #     if self.is_last_accum(batch_idx):
+    #         # only apply ema on the last gradient accumulation step,
+    #         # if it is the iteration that has optimizer.step()
+    #         if self.conf.train_mode == TrainMode.latent_diffusion:
+    #             # it trains only the latent hence change only the latent
+    #             ema(self.model.latent_net, self.ema_model.latent_net,
+    #                 self.conf.ema_decay)
+    #         else:
+    #             ema(self.model, self.ema_model, self.conf.ema_decay)
 
-            # logging
-            if self.conf.train_mode.require_dataset_infer():
-                imgs = None
-            else:
-                imgs = batch['img']
-            self.log_sample(x_start=imgs)
-            self.evaluate_scores()
+    #         # logging
+    #         if self.conf.train_mode.require_dataset_infer():
+    #             imgs = None
+    #         else:
+    #             if self.conf.data_name == 'viewsyn':
+    #                 inputs = batch['camera']
+    #             else:
+    #                 inputs = batch['img']
+    #         self.log_sample(x_start=inputs)
+    #         self.evaluate_scores()
 
     def on_before_optimizer_step(self, optimizer: Optimizer,
                                  optimizer_idx: int) -> None:
@@ -689,6 +728,7 @@ class LitModel(pl.LightningModule):
             if 'infer' in self.conf.eval_programs:
                 print('infer ...')
                 conds = self.infer_whole_dataset().float()
+                
                 # NOTE: always use this path for the latent.pkl files
                 save_path = f'checkpoints/{self.conf.name}/latent.pkl'
             else:
@@ -879,7 +919,6 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
     # assert not (conf.fp16 and conf.grad_clip > 0
     #             ), 'pytorch lightning has bug with amp + gradient clipping'
     model = LitModel(conf)
-
     if not os.path.exists(conf.logdir):
         os.makedirs(conf.logdir)
     checkpoint = ModelCheckpoint(dirpath=f'{conf.logdir}',
@@ -887,6 +926,7 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
                                  save_top_k=1,
                                  every_n_train_steps=conf.save_every_samples //
                                  conf.batch_size_effective)
+
     checkpoint_path = f'{conf.logdir}/last.ckpt'
     print('ckpt path:', checkpoint_path)
     if os.path.exists(checkpoint_path):

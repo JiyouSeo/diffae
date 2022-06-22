@@ -3,6 +3,7 @@ from model.latentnet import *
 from diffusion.resample import UniformSampler
 from diffusion.diffusion import space_timesteps
 from typing import Tuple
+from model.unet_autoenc import BeatGANsAutoencViewSynConfig
 
 from torch.utils.data import DataLoader
 
@@ -39,6 +40,10 @@ data_paths = {
         'datasets/celeba_anno/CelebAMask-HQ-attribute-anno.txt'),
     'celeba_relight':
     os.path.expanduser('datasets/celeba_hq_light/celeba_light.txt'),
+    'viewsyn':
+    os.path.join('/home/jiyouseo/diffae/datasets/custom/train/'),
+    'custom':
+    os.path.join('/home/jiyouseo/diffae/datasets/custom/train/'),
 }
 
 
@@ -301,6 +306,20 @@ class TrainConfig(BaseConfig):
                               original_resolution=None,
                               crop_d2c=True,
                               **kwargs)
+        elif self.data_name == 'viewsyn':
+            return CustomDataset(folder=path or self.data_path,
+                              image_size=self.img_size,
+                              exts=['jpg','png'],
+                              sort_names=True,
+                              has_subdir=False,
+                              **kwargs)
+        elif self.data_name == 'custom':
+            return CustomDataset(folder=path or self.data_path,
+                              image_size=self.img_size,
+                              exts=['jpg','png'],
+                              sort_names=True,
+                              has_subdir=False,
+                              **kwargs)
         else:
             raise NotImplementedError()
 
@@ -359,10 +378,15 @@ class TrainConfig(BaseConfig):
             )
         elif self.model_name in [
                 ModelName.beatgans_autoenc,
+                ModelName.beatgans_viewsyn,
         ]:
-            cls = BeatGANsAutoencConfig
             # supports both autoenc and vaeddpm
             if self.model_name == ModelName.beatgans_autoenc:
+                cls = BeatGANsAutoencConfig
+                self.model_type = ModelType.autoencoder
+            
+            elif self.model_name == ModelName.beatgans_viewsyn:
+                cls = BeatGANsAutoencViewSynConfig
                 self.model_type = ModelType.autoencoder
             else:
                 raise NotImplementedError()
@@ -419,6 +443,7 @@ class TrainConfig(BaseConfig):
                 latent_net_conf=latent_net_conf,
                 resnet_cond_channels=self.net_beatgans_resnet_cond_channels,
             )
+
         else:
             raise NotImplementedError(self.model_name)
 

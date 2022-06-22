@@ -72,7 +72,10 @@ def evaluate_lpips(
             'psnr': [],
         }
         for batch in tqdm(val_loader, desc='lpips'):
-            imgs = batch['img'].to(device)
+            if conf.data_name == 'viewsyn':
+                imgs, camera = batch['img'].to(device), batch['camera'].to(device)
+            else:
+                imgs = batch['img'].to(device)
 
             if use_inverted_noise:
                 # inverse the noise
@@ -80,7 +83,10 @@ def evaluate_lpips(
                 model_kwargs = {}
                 if conf.model_type.has_autoenc():
                     with torch.no_grad():
-                        model_kwargs = model.encode(imgs)
+                        if conf.data_name == 'viewsyn':
+                            model_kwargs = model.encode(camera)
+                        else:
+                            model_kwargs = model.encode(imgs)
                 x_T = sampler.ddim_reverse_sample_loop(
                     model=model,
                     x=imgs,
@@ -102,13 +108,21 @@ def evaluate_lpips(
                     latent_sampler=latent_sampler,
                 )
             else:
-                pred_imgs = render_condition(conf=conf,
-                                             model=model,
-                                             x_T=x_T,
-                                             x_start=imgs,
-                                             cond=None,
-                                             sampler=sampler,
-                                             latent_sampler=latent_sampler)
+                if conf.data_name == 'viewsyn':
+                    pred_imgs = render_condition(conf=conf,
+                                                model=model,
+                                                x_T=x_T,
+                                                x_start=camera,
+                                                cond=None,
+                                                sampler=sampler)
+                else:
+                    pred_imgs = render_condition(conf=conf,
+                                                model=model,
+                                                x_T=x_T,
+                                                x_start=imgs,
+                                                cond=None,
+                                                sampler=sampler)
+                                             
             # # returns {'cond', 'cond2'}
             # conds = model.encode(imgs)
             # pred_imgs = sampler.sample(model=model,
@@ -282,18 +296,30 @@ def evaluate_fid(
 
                 i = 0
                 for batch in tqdm(train_loader, desc='generating images'):
-                    imgs = batch['img'].to(device)
-                    x_T = torch.randn(
-                        (len(imgs), 3, conf.img_size, conf.img_size),
-                        device=device)
-                    batch_images = render_condition(
-                        conf=conf,
-                        model=model,
-                        x_T=x_T,
-                        x_start=imgs,
-                        cond=None,
-                        sampler=sampler,
-                        latent_sampler=latent_sampler).cpu()
+                    if conf.data_name == 'viewsyn':
+                        imgs, camera = batch['img'].to(device), batch['camera'].to(device)
+                        x_T = torch.randn(
+                            (len(imgs), 3, conf.img_size, conf.img_size),
+                            device=device)
+                        batch_images = render_condition(
+                            conf=conf,
+                            model=model,
+                            x_T=x_T,
+                            x_start=camera,
+                            cond=None,
+                            sampler=sampler).cpu()
+                    else:
+                        imgs = batch['img'].to(device)
+                        x_T = torch.randn(
+                            (len(imgs), 3, conf.img_size, conf.img_size),
+                            device=device)
+                        batch_images = render_condition(
+                            conf=conf,
+                            model=model,
+                            x_T=x_T,
+                            x_start=imgs,
+                            cond=None,
+                            sampler=sampler).cpu()
                     # model: BeatGANsAutoencModel
                     # # returns {'cond', 'cond2'}
                     # conds = model.encode(imgs)

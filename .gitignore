@@ -10,6 +10,7 @@ datasets/ffhq
 datasets/ffhq256.lmdb
 datasets/celeba.lmdb
 datasets/celeba
+datasets/custom
 checkpoints
 
 .ipynb_checkpoints/

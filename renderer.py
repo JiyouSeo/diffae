@@ -53,6 +53,7 @@ def render_condition(
         # returns {'cond', 'cond2'}
         if cond is None:
             cond = model.encode(x_start)
+            cond = cond['cond']
         return sampler.sample(model=model,
                               noise=x_T,
                               model_kwargs={'cond': cond})

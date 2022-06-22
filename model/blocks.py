@@ -101,7 +101,7 @@ class ResBlock(TimestepBlock):
         #############################
         assert conf.lateral_channels is None
         layers = [
-            normalization(conf.channels),
+            normalization(conf.channels), # Group Norm
             nn.SiLU(),
             conv_nd(conf.dims, conf.channels, conf.out_channels, 3, padding=1)
         ]
@@ -121,14 +121,14 @@ class ResBlock(TimestepBlock):
         #############################
         # OUT LAYERS CONDITIONS
         #############################
-        if conf.use_condition:
+        if conf.use_condition: # time embedding
             # condition layers for the out_layers
             self.emb_layers = nn.Sequential(
                 nn.SiLU(),
                 linear(conf.emb_channels, 2 * conf.out_channels),
             )
 
-            if conf.two_cond:
+            if conf.two_cond: # encoder output이 embedding 되어 들어가는 곳
                 self.cond_emb_layers = nn.Sequential(
                     nn.SiLU(),
                     linear(conf.cond_emb_channels, conf.out_channels),
@@ -235,7 +235,7 @@ class ResBlock(TimestepBlock):
                 if cond is None:
                     cond_out = None
                 else:
-                    cond_out = self.cond_emb_layers(cond).type(h.dtype)
+                    cond_out = self.cond_emb_layers(cond).type(h.dtype) # encoder의 Output condition
 
                 if cond_out is not None:
                     while len(cond_out.shape) < len(h.shape):
@@ -298,7 +298,7 @@ def apply_conditions(
             b = None
         else:
             if each.shape[1] == in_channels * 2:
-                a, b = th.chunk(each, 2, dim=1)
+                a, b = th.chunk(each, 2, dim=1) # dim =1을 2 부분으로 나눈다. 
             else:
                 a = each
                 b = None
@@ -312,19 +312,28 @@ def apply_conditions(
         biases = scale_bias
 
     # default, the scale & shift are applied after the group norm but BEFORE SiLU
-    pre_layers, post_layers = layers[0], layers[1:]
+    pre_layers, post_layers = layers[0], layers[1:] # normalization, SiLU -> conv
 
     # spilt the post layer to be able to scale up or down before conv
     # post layers will contain only the conv
-    mid_layers, post_layers = post_layers[:-2], post_layers[-2:]
+    mid_layers, post_layers = post_layers[:-2], post_layers[-2:] # SiLU, Dropout -> conv
+
+    # layers += [
+    #             normalization(conf.out_channels),
+    #             nn.SiLU(),
+    #             nn.Dropout(p=conf.dropout),
+    #             conv,
+    #         ]
 
     h = pre_layers(h)
     # scale and shift for each condition
     for i, (scale, shift) in enumerate(scale_shifts):
         # if scale is None, it indicates that the condition is not provided
-        if scale is not None:
+        if scale is not None: # time & encoder condition으로 bias를 scale + shift 하는 곳
+            # print(h.shape, biases[i], scale.shape)
             h = h * (biases[i] + scale)
             if shift is not None:
+                # print(shift.shape)
                 h = h + shift
     h = mid_layers(h)
 

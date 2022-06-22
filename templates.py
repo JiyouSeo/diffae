@@ -33,7 +33,7 @@ def autoenc_base():
     base configuration for all Diff-AE models.
     """
     conf = TrainConfig()
-    conf.batch_size = 32
+    conf.batch_size = 16
     conf.beatgans_gen_type = GenerativeType.ddim
     conf.beta_scheduler = 'linear'
     conf.data_name = 'ffhq'
@@ -298,4 +298,40 @@ def pretrain_bedroom128():
         path=f'checkpoints/{bedroom128_autoenc().name}/last.ckpt',
     )
     conf.latent_infer_path = f'checkpoints/{bedroom128_autoenc().name}/latent.pkl'
+    return conf
+
+def viewsyn_autoenc():
+    conf = viewsyn_autoenc_base()
+    conf.name = 'viewsyn_autoenc'
+    return conf
+
+def viewsyn_autoenc_base():
+    conf = autoenc_base()
+    conf.data_name = 'viewsyn'
+    conf.model_name = ModelName.beatgans_viewsyn
+    conf.scale_up_gpus(1)
+    conf.img_size = 128
+    conf.net_ch = 128 # camera pose input channel
+    conf.eval_ema_every_samples = 100
+    conf.eval_every_samples = 100
+    conf.eval_num_images = 100
+    conf.make_model_conf()
+    return conf
+
+def custom_autoenc():
+    conf = custom_autoenc_base()
+    conf.name = 'custom_autoenc'
+    return conf
+
+def custom_autoenc_base():
+    conf = autoenc_base()
+    conf.batch_size = 8
+    conf.data_name = 'custom'
+    conf.model_name = ModelName.beatgans_autoenc
+    conf.scale_up_gpus(1)
+    conf.img_size = 128
+    conf.net_ch = 128
+    conf.eval_ema_every_samples = 100
+    conf.eval_every_samples = 100
+    conf.make_model_conf()
     return conf

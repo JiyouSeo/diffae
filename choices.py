@@ -109,6 +109,7 @@ class ModelName(Enum):
 
     beatgans_ddpm = 'beatgans_ddpm'
     beatgans_autoenc = 'beatgans_autoenc'
+    beatgans_viewsyn = 'beatgans_viewsyn'
 
 
 class ModelMeanType(Enum):
